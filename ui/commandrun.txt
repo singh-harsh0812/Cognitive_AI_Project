@@ -1,0 +1,5 @@
+pip install streamlit
+
+to run the program
+
+python -m streamlit run ui/app.py
