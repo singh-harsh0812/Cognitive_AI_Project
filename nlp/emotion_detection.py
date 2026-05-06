@@ -1,14 +1,30 @@
-
 from textblob import TextBlob
 
 
+# ==========================================
+# SENTIMENT DETECTION
+# ==========================================
+def detect_sentiment(text):
+    polarity = TextBlob(text).sentiment.polarity
+
+    if polarity > 0.2:
+        return "Positive"
+    elif polarity < -0.2:
+        return "Negative"
+    else:
+        return "Neutral"
+
+
+# ==========================================
+# EMOTION DETECTION (ROBUST VERSION)
+# ==========================================
 def detect_emotion(text):
     text = text.lower()
 
     emotion_keywords = {
         "Stress": [
             "stress", "stressed", "pressure", "overwhelmed",
-            "tired", "burden", "exhausted"
+            "tired", "exhausted", "burden"
         ],
 
         "Anxiety": [
@@ -18,58 +34,83 @@ def detect_emotion(text):
 
         "Confusion": [
             "confused", "unsure", "lost", "unclear",
-            "doubt", "cannot decide", "uncertain"
+            "uncertain", "don't know", "what to do",
+            "no idea", "cannot decide", "stuck"
         ],
 
         "Depression": [
-            "depressed", "depression", "hopeless",
-            "low", "sad", "empty", "burnout"
+            "depressed", "hopeless", "sad",
+            "empty", "burnout"
         ],
 
         "Motivation": [
             "motivated", "inspired", "focused",
-            "determined", "goal", "improve"
+            "determined", "excited"
         ]
     }
 
-    detected_emotions = []
+    detected = []
 
+    # ==========================================
+    # STEP 1: Keyword Detection
+    # ==========================================
     for emotion, words in emotion_keywords.items():
-        for word in words:
-            if word in text:
-                detected_emotions.append(emotion)
-                break
+        if any(word in text for word in words):
+            detected.append(emotion)
 
-    if not detected_emotions:
-        detected_emotions.append("Neutral")
+    if detected:
+        return detected[:2]   # limit to top 2
 
-    return detected_emotions
+    # ==========================================
+    # STEP 2: Smart Rule-Based Fallback
+    # ==========================================
+    if any(word in text for word in ["don't know", "lost", "stuck", "confused"]):
+        return ["Confusion"]
+
+    # ==========================================
+    # STEP 3: Sentiment-Based Fallback
+    # ==========================================
+    sentiment = detect_sentiment(text)
+
+    if sentiment == "Negative":
+        return ["Stress"]
+
+    elif sentiment == "Positive":
+        # prevent false motivation
+        if any(word in text for word in ["motivated", "excited", "inspired", "focused"]):
+            return ["Motivation"]
+        return ["Neutral"]
+
+    # ==========================================
+    # STEP 4: Final Default
+    # ==========================================
+    return ["Neutral"]
 
 
-def detect_sentiment(text):
-    analysis = TextBlob(text)
-
-    polarity = analysis.sentiment.polarity
-
-    if polarity > 0:
-        return "Positive"
-    elif polarity < 0:
-        return "Negative"
-    else:
-        return "Neutral"
-
-
+# ==========================================
+# TEST BLOCK
+# ==========================================
 if __name__ == "__main__":
-    sample_text = "I feel mentally exhausted and confused about my future."
+    test_samples = [
+        "I feel mentally exhausted and confused about my future.",
+        "I am really motivated to improve my coding skills.",
+        "I don't know what to do anymore.",
+        "Everything feels hopeless and empty.",
+        "I am just doing my work normally.",
+        "I am worried about my career and feeling nervous.",
+        "I feel pressure from my family to succeed.",
+        "I am excited to learn new technologies.",
+        "I feel stuck and unsure about my next step.",
+        "Life feels normal these days."
+    ]
 
-    emotions = detect_emotion(sample_text)
-    sentiment = detect_sentiment(sample_text)
+    print("\n===== Emotion Detection Test =====\n")
 
-    print("Input Text:")
-    print(sample_text)
+    for text in test_samples:
+        emotions = detect_emotion(text)
+        sentiment = detect_sentiment(text)
 
-    print("\nDetected Emotion:")
-    print(emotions)
-
-    print("\nSentiment:")
-    print(sentiment)
+        print(f"Input: {text}")
+        print(f"Emotion: {emotions}")
+        print(f"Sentiment: {sentiment}")
+        print("-" * 60)

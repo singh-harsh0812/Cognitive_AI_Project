@@ -1,174 +1,155 @@
-from transformers import AutoTokenizer, AutoModelForCausalLM
-from peft import PeftModel
 import torch
-import streamlit as st
+from transformers import AutoTokenizer, AutoModelForCausalLM, BitsAndBytesConfig
+from peft import PeftModel
 
+from ml.predict import predict_with_confidence
 from nlp.emotion_detection import detect_emotion, detect_sentiment
-from simulation.simulation import simulate_decision
-from simulation.planner import generate_action_plan
 
 
-# -----------------------------------
-# Load Phi-2 Model Once (GPU Version)
-# -----------------------------------
-@st.cache_resource
-def load_phi2_model():
-    base_model_name = "microsoft/phi-2"
-    adapter_path = "./llm/phi2_model"
-
-    print("Loading Phi-2 tokenizer...")
+# -----------------------------
+# LOAD MODEL
+# -----------------------------
+def load_model():
+    base_model_name = "microsoft/Phi-3-mini-4k-instruct"
+    adapter_path = "./llm/phi3_model"
 
     tokenizer = AutoTokenizer.from_pretrained(
         base_model_name,
         trust_remote_code=True
     )
 
-    tokenizer.pad_token = tokenizer.eos_token
-
-    print("Loading base Phi-2 model on GPU...")
+    bnb_config = BitsAndBytesConfig(
+        load_in_4bit=True,
+        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_use_double_quant=True,
+        bnb_4bit_quant_type="nf4"
+    )
 
     base_model = AutoModelForCausalLM.from_pretrained(
         base_model_name,
-        trust_remote_code=True,
-        torch_dtype=torch.float16,
+        quantization_config=bnb_config,
         device_map="auto",
-        offload_folder="offload",
-        offload_state_dict=True
+        trust_remote_code=True
     )
 
-    print("Loading LoRA adapter...")
-
-    model = PeftModel.from_pretrained(
-        base_model,
-        adapter_path,
-        device_map="auto",
-        offload_folder="offload"
-    )
-
+    model = PeftModel.from_pretrained(base_model, adapter_path)
     model.eval()
-
-    print("Phi-2 GPU Model Ready!")
 
     return tokenizer, model
 
 
-# -----------------------------------
-# Generate AI Response
-# -----------------------------------
-def generate_ai_response(user_input, prediction):
-    tokenizer, model = load_phi2_model()
+tokenizer, model = load_model()
 
-    # NLP
+
+# -----------------------------
+# GENERATE RESPONSE
+# -----------------------------
+def generate_response(user_input, context=""):
+
+    intent_data = predict_with_confidence(user_input)
     emotions = detect_emotion(user_input)
     sentiment = detect_sentiment(user_input)
 
-    # Simulation
-    simulation_result = simulate_decision(prediction)
+    primary = intent_data["primary"]
+    secondary = intent_data["secondary"]
+    confidence = intent_data["confidence"]
 
-    # Weekly Plan
-    action_plan = generate_action_plan(prediction)
-    action_plan_text = "\n".join(action_plan)
+    # -----------------------------
+    # DECISION STRATEGY
+    # -----------------------------
+    if confidence == "low":
+        decision_instruction = f"""
+User is confused between:
+- {primary[0]}
+- {secondary[0]}
 
+Compare both clearly and guide the decision.
+"""
+    else:
+        decision_instruction = f"""
+User is clear.
+
+Give direct advice: {primary[0]}
+Do not compare.
+"""
+
+    # -----------------------------
+    # PROMPT (STRICT FORMAT CONTROL)
+    # -----------------------------
     prompt = f"""
-You are an expert career counselor, emotional mentor, and life decision advisor.
+You are a practical career advisor.
 
-Student Problem:
+STYLE:
+- Simple, direct, human language
+- No formal or complex words
+- No motivational or generic lines
+- Do NOT write "Option name" or any generic label just use the name of option directly there
+- Write like you are talking to a friend
+- Avoid words like: "consider", "evaluate", "potential"
+- Prefer: "go for", "pick", "focus on"
+
+FORMAT (VERY IMPORTANT):
+- When comparing, ALWAYS use this format:
+
+• Option Name:
+  → short point
+  → short point
+
+• Option Name:
+  → short point
+  → short point
+
+- Max 3 or 4 points per option
+- Each line under 20 words
+- No long sentences
+- Do NOT write paragraphs when comparing
+
+DECISION:
+- End with:
+  If X → choose A
+  If Y → choose B
+
+- Make it practical (money, time, pressure)
+
+{decision_instruction}
+
+Context:
+{context}
+
+User Problem:
 {user_input}
 
-ML Suggested Decision:
-{prediction}
-
-Detected Emotions:
-{", ".join(emotions)}
-
-Sentiment:
-{sentiment}
-
-Future Outcome Simulation:
-
-Short-Term:
-{simulation_result["short_term"]}
-
-Long-Term:
-{simulation_result["long_term"]}
-
-Risk:
-{simulation_result["risk"]}
-
-Benefit:
-{simulation_result["benefit"]}
-
-4-Week Improvement Plan:
-{action_plan_text}
-
-Task:
-Write one strong, natural, human-like mentor response.
-
-Rules:
-- only one paragraph
-- no bullet points
-- no robotic text
-- no labels like Answer:
-- supportive and practical
-- emotionally intelligent
-- realistic advice
+Emotion: {", ".join(emotions)} | {sentiment}
 
 Response:
 """
+
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
     inputs = tokenizer(
         prompt,
         return_tensors="pt",
         truncation=True,
-        max_length=1024
-    ).to("cuda")
+        max_length=420
+    ).to(device)
 
-    outputs = model.generate(
-        **inputs,
-        max_new_tokens=120,
-        temperature=0.7,
-        top_p=0.9,
-        do_sample=True,
-        repetition_penalty=1.1
-    )
-
-    # Decode full output
-    full_response = tokenizer.decode(
-        outputs[0],
-        skip_special_tokens=True
-    ).strip()
-
-    # Extract only final generated answer
-    if "Response:" in full_response:
-        response = full_response.split("Response:")[-1].strip()
-    else:
-        response = full_response.strip()
-
-    # Safety fallback
-    if len(response) < 30:
-        response = (
-            "Focus on stability first, reduce immediate pressure, "
-            "and take gradual steps toward your long-term goals."
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_new_tokens=300,
+            temperature=0.4,     # tighter control
+            top_p=0.85,
+            do_sample=True,
+            repetition_penalty=1.1,
+            pad_token_id=tokenizer.eos_token_id
         )
 
-    return response
+    result = tokenizer.decode(outputs[0], skip_special_tokens=True)
 
+    # -----------------------------
+    # CLEAN RESPONSE
+    # -----------------------------
+    if "Response:" in result:
+        result = result.split("Response:")[-1].strip()
 
-# -----------------------------------
-# Direct Testing
-# -----------------------------------
-if __name__ == "__main__":
-    sample_input = (
-        "I am confused between getting a job and pursuing higher studies "
-        "because my family needs financial support."
-    )
-
-    sample_prediction = "Job First"
-
-    result = generate_ai_response(
-        sample_input,
-        sample_prediction
-    )
-
-    print("\nGenerated Response:\n")
-    print(result)
+    return result

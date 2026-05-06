@@ -1,3 +1,0 @@
-pip install transformers torch sentencepiece accelerate
-
-pip install transformers datasets sentencepiece accelerate torch pandas scikit-learn
